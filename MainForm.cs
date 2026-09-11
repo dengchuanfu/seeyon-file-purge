@@ -437,7 +437,7 @@ public sealed class MainForm : Form
             command.CommandText = """
                 WITH FolderRoots AS (
                     SELECT
-                        ID, FR_NAME, PARENT_FR_ID, LOGICAL_PATH, IS_FOLDER, SOURCE_ID,
+                        ID, FR_NAME, PARENT_FR_ID, LOGICAL_PATH, IS_FOLDER, SOURCE_ID, FR_SIZE,
                         CAST(
                             N'0:' + ISNULL(FR_NAME, N'') + N':' +
                             RIGHT(REPLICATE(N'0', 30) + CONVERT(nvarchar(30), ID), 30) + N'/'
@@ -447,11 +447,11 @@ public sealed class MainForm : Form
                     WHERE FR_NAME = @folderName AND IS_FOLDER = 1
                 ),
                 ResourceTree AS (
-                    SELECT ID, FR_NAME, PARENT_FR_ID, LOGICAL_PATH, IS_FOLDER, SOURCE_ID, SORT_PATH
+                    SELECT ID, FR_NAME, PARENT_FR_ID, LOGICAL_PATH, IS_FOLDER, SOURCE_ID, FR_SIZE, SORT_PATH
                     FROM FolderRoots
                     UNION ALL
                     SELECT
-                        child.ID, child.FR_NAME, child.PARENT_FR_ID, child.LOGICAL_PATH, child.IS_FOLDER, child.SOURCE_ID,
+                        child.ID, child.FR_NAME, child.PARENT_FR_ID, child.LOGICAL_PATH, child.IS_FOLDER, child.SOURCE_ID, child.FR_SIZE,
                         CAST(
                             parent.SORT_PATH +
                             CASE WHEN child.IS_FOLDER = 1 THEN N'0:' ELSE N'1:' END +
@@ -465,7 +465,8 @@ public sealed class MainForm : Form
                 SELECT
                     ResourceTree.ID AS [文件ID],
                     ResourceTree.FR_NAME AS [文件名称],
-                    fileInfo.ID AS [物理文件ID]
+                    fileInfo.ID AS [物理文件ID],
+                    COALESCE(fileInfo.FILE_SIZE, ResourceTree.FR_SIZE, 0) AS [统计源文件大小]
                 FROM ResourceTree
                 LEFT JOIN CTP_FILE AS fileInfo ON fileInfo.ID = ResourceTree.SOURCE_ID
                 WHERE ResourceTree.IS_FOLDER = 0
@@ -482,6 +483,7 @@ public sealed class MainForm : Form
             resultGrid.Columns["物理文件ID"].AutoSizeMode = DataGridViewAutoSizeColumnMode.AllCells;
             resultGrid.Columns["文件名称"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
             resultGrid.Columns["文件名称"].FillWeight = 100;
+            resultGrid.Columns["统计源文件大小"].Visible = false;
             queryStatus.Text = $"查询完成，共找到 {result.Rows.Count} 个文件；物理文件仅供核对，不会被删除。";
         }
         catch (SqlException ex)
@@ -523,10 +525,11 @@ public sealed class MainForm : Form
             {
                 ResourceId = Convert.ToString(row.Cells["文件ID"].Value),
                 PhysicalId = Convert.ToString(row.Cells["物理文件ID"].Value),
-                FileName = Convert.ToString(row.Cells["文件名称"].Value) ?? "未命名文件"
+                FileName = Convert.ToString(row.Cells["文件名称"].Value) ?? "未命名文件",
+                FileSize = Convert.ToInt64(row.Cells["统计源文件大小"].Value ?? 0L)
             })
             .Where(item => long.TryParse(item.ResourceId, out _) && !string.IsNullOrWhiteSpace(item.PhysicalId))
-            .Select(item => (ResourceId: long.Parse(item.ResourceId!), PhysicalId: item.PhysicalId!, item.FileName))
+            .Select(item => (ResourceId: long.Parse(item.ResourceId!), PhysicalId: item.PhysicalId!, item.FileName, item.FileSize))
             .Distinct().ToList();
         var resourceIds = items.Select(item => item.ResourceId).Distinct().ToList();
         if (items.Count == 0)
@@ -546,7 +549,7 @@ public sealed class MainForm : Form
             if (!Directory.Exists(UploadRoot) || !Directory.Exists(OfficeTransRoot))
                 throw new IOException("未找到 upload 或 officetrans 目录，请确认 OA 路径。 ");
             var physicalIds = items.Select(item => item.PhysicalId).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var uploadCount = 0; var officeCount = 0;
+            var uploadCount = 0; var officeCount = 0; long officeTransSize = 0;
             foreach (var path in Directory.EnumerateFiles(UploadRoot, "*", SearchOption.AllDirectories)
                 .Where(path => physicalIds.Contains(Path.GetFileName(path))).ToList())
             {
@@ -557,22 +560,37 @@ public sealed class MainForm : Form
                 foreach (var target in Directory.EnumerateDirectories(dateDir)
                     .Where(path => physicalIds.Contains(Path.GetFileName(path))).ToList())
                 {
-                    EnsureUnderRoot(target, OfficeTransRoot); Directory.Delete(target, true); officeCount++;
+                    EnsureUnderRoot(target, OfficeTransRoot);
+                    officeTransSize += GetDirectorySize(target);
+                    Directory.Delete(target, true); officeCount++;
                 }
             }
             await using var transaction = await connection.BeginTransactionAsync();
-            await using var command = connection.CreateCommand(); command.Transaction = (SqlTransaction)transaction;
-            var parameters = new List<string>();
-            for (var i = 0; i < resourceIds.Count; i++) { var name = $"@id{i}"; parameters.Add(name); command.Parameters.Add(name, System.Data.SqlDbType.BigInt).Value = resourceIds[i]; }
-            command.CommandText = $"DELETE FROM DOC_RESOURCES WHERE IS_FOLDER = 0 AND ID IN ({string.Join(",", parameters)});";
-            var affected = await command.ExecuteNonQueryAsync(); await transaction.CommitAsync();
+            var affected = 0;
+            const int batchSize = 500;
+            foreach (var batch in resourceIds.Chunk(batchSize))
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = (SqlTransaction)transaction;
+                var parameters = new List<string>();
+                for (var i = 0; i < batch.Length; i++)
+                {
+                    var name = $"@id{i}";
+                    parameters.Add(name);
+                    command.Parameters.Add(name, System.Data.SqlDbType.BigInt).Value = batch[i];
+                }
+                command.CommandText = $"DELETE FROM DOC_RESOURCES WHERE IS_FOLDER = 0 AND ID IN ({string.Join(",", parameters)});";
+                affected += await command.ExecuteNonQueryAsync();
+            }
+            await transaction.CommitAsync();
             foreach (var row in rows.OrderByDescending(row => row.Index)) if (row.DataBoundItem is DataRowView view) view.Row.Delete();
             queryStatus.Text = $"删除完成：OA 记录 {affected} 条，upload 文件 {uploadCount} 个，officetrans 文件夹 {officeCount} 个。";
             if (!string.IsNullOrWhiteSpace(enterpriseWechatWebhook))
             {
                 queryStatus.Text += " 正在推送企业微信消息...";
                 var pushResult = await SendDeleteNotificationAsync(
-                    items.Select(item => (item.ResourceId, item.FileName, item.PhysicalId)).ToList(),
+                    items.Select(item => (item.ResourceId, item.FileName, item.PhysicalId, item.FileSize)).ToList(),
+                    items.Sum(item => item.FileSize),
                     affected, uploadCount, officeCount);
                 queryStatus.Text = pushResult.Success
                     ? $"删除完成并已推送消息：OA 记录 {affected} 条，upload 文件 {uploadCount} 个，officetrans 文件夹 {officeCount} 个。"
@@ -581,7 +599,7 @@ public sealed class MainForm : Form
                     MessageBox.Show($"文件已删除，但企业微信消息推送失败。\n\n{pushResult.ErrorMessage}", "消息推送失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
-        catch (SqlException) { queryStatus.Text = "数据库删除失败，事务已回滚；请核对服务器文件。"; MessageBox.Show("数据库删除失败，事务已回滚；服务器文件删除无法自动恢复，请立即核对。", "删除失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        catch (SqlException ex) { queryStatus.Text = "数据库删除失败，事务已回滚；请核对服务器文件。"; MessageBox.Show($"数据库删除失败，事务已回滚；服务器文件删除无法自动恢复，请立即核对。\n\n错误编号：{ex.Number}\n错误信息：{ex.Message}", "删除失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         catch (UnauthorizedAccessException) { queryStatus.Text = "没有删除服务器文件的权限。"; MessageBox.Show("没有删除服务器文件的权限，请使用具备目录写入权限的账户运行。", "权限不足", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         catch (IOException ex) { queryStatus.Text = "服务器文件删除失败。"; MessageBox.Show($"服务器文件删除失败，OA 记录未删除。\n\n{ex.Message}", "删除失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         finally { deleteSelectedButton.Enabled = true; deleteAllButton.Enabled = true; }
@@ -594,8 +612,21 @@ public sealed class MainForm : Form
         if (!fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase)) throw new IOException("检测到超出 OA 存储根目录的路径，操作已中止。 ");
     }
 
+    private static long GetDirectorySize(string directory)
+    {
+        long total = 0;
+        foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+        {
+            try { total += new FileInfo(file).Length; }
+            catch (FileNotFoundException) { }
+            catch (DirectoryNotFoundException) { }
+        }
+        return total;
+    }
+
     private async Task<PushResult> SendDeleteNotificationAsync(
-        IReadOnlyList<(long ResourceId, string FileName, string PhysicalId)> files,
+        IReadOnlyList<(long ResourceId, string FileName, string PhysicalId, long FileSize)> files,
+        long totalFileSize,
         int databaseCount,
         int uploadCount,
         int officeTransCount)
@@ -616,15 +647,15 @@ public sealed class MainForm : Form
             csv.AppendLine("项目,内容");
             csv.AppendLine($"查询文件夹,{EscapeCsv(folderNameInput.Text.Trim())}");
             csv.AppendLine($"删除文件数,{files.Count}");
+            csv.AppendLine($"文件总大小,{EscapeCsv(FormatFileSize(totalFileSize))}");
+            csv.AppendLine("统计说明,文件总大小按 CTP_FILE.FILE_SIZE 汇总；officetrans 被删除空间未计入");
             csv.AppendLine($"OA记录数,{databaseCount}");
-            csv.AppendLine($"upload源文件数,{uploadCount}");
-            csv.AppendLine($"officetrans文件夹数,{officeTransCount}");
             csv.AppendLine($"OA服务器,{EscapeCsv(Environment.MachineName)}");
             csv.AppendLine($"操作时间,{timestamp:yyyy-MM-dd HH:mm:ss}");
             csv.AppendLine();
-            csv.AppendLine("文件ID,文件名称,物理文件ID");
+            csv.AppendLine("文件ID,文件名称,物理文件ID,文件大小");
             foreach (var file in files)
-                csv.AppendLine($"{file.ResourceId},{EscapeCsv(file.FileName)},{EscapeCsv(file.PhysicalId)}");
+                csv.AppendLine($"{file.ResourceId},{EscapeCsv(file.FileName)},{EscapeCsv(file.PhysicalId)},{EscapeCsv(FormatFileSize(file.FileSize))}");
             await File.WriteAllTextAsync(temporaryPath, csv.ToString(), new UTF8Encoding(true));
 
             var uploadUri = new UriBuilder(webhookUri)
@@ -709,4 +740,20 @@ public sealed class MainForm : Form
     }
 
     private static string EscapeCsv(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
+
+    private static string FormatFileSize(long bytes)
+    {
+        if (bytes < 0) bytes = 0;
+        string[] units = ["字节", "KB", "MB", "GB", "TB"];
+        var value = (double)bytes;
+        var unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.Length - 1)
+        {
+            value /= 1024;
+            unitIndex++;
+        }
+        return unitIndex == 0
+            ? $"{bytes:N0} {units[unitIndex]}"
+            : $"{value:N2} {units[unitIndex]}（{bytes:N0} 字节）";
+    }
 }
