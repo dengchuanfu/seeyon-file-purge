@@ -1,14 +1,23 @@
 using System.Data;
+using System.Net.Http.Json;
+using System.Text;
+using System.Text.Json;
 using Microsoft.Data.SqlClient;
 
 namespace SeeyonFilePurge;
 
 public sealed class MainForm : Form
 {
+    private sealed record PushResult(bool Success, string ErrorMessage);
+
     private const string UploadRoot = @"D:\Seeyon\A8\base\upload";
     private const string OfficeTransRoot = @"D:\Seeyon\A8\base\officetrans";
+    private static readonly HttpClient WebhookClient = new() { Timeout = TimeSpan.FromSeconds(60) };
+    private readonly Panel headerPanel = new();
     private readonly Panel connectionPanel = new();
     private readonly Label connectionStatus = new();
+    private readonly Button webhookSettingsButton = new();
+    private readonly Label webhookStatus = new();
     private readonly TextBox serverInput = new();
     private readonly TextBox databaseInput = new();
     private readonly TextBox usernameInput = new();
@@ -22,6 +31,7 @@ public sealed class MainForm : Form
     private readonly Label queryStatus = new();
     private readonly DataGridView resultGrid = new();
     private SqlConnection? connection;
+    private string? enterpriseWechatWebhook;
 
     public MainForm()
     {
@@ -39,13 +49,10 @@ public sealed class MainForm : Form
 
     private void BuildHeader()
     {
-        var header = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 72,
-            BackColor = Color.White,
-            Padding = new Padding(28, 0, 28, 0)
-        };
+        headerPanel.Dock = DockStyle.Top;
+        headerPanel.Height = 72;
+        headerPanel.BackColor = Color.White;
+        headerPanel.Padding = new Padding(28, 0, 28, 0);
 
         var title = new Label
         {
@@ -61,12 +68,125 @@ public sealed class MainForm : Form
         connectionStatus.Font = new Font("Microsoft YaHei UI", 10);
         connectionStatus.ForeColor = Color.FromArgb(109, 119, 130);
         connectionStatus.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        header.Controls.Add(title);
-        header.Controls.Add(connectionStatus);
-        header.Resize += (_, _) =>
-            connectionStatus.Location = new Point(header.ClientSize.Width - connectionStatus.Width - 28, 27);
 
-        Controls.Add(header);
+        webhookStatus.Text = "未配置消息推送";
+        webhookStatus.AutoSize = true;
+        webhookStatus.Font = new Font("Microsoft YaHei UI", 9);
+        webhookStatus.ForeColor = Color.FromArgb(109, 119, 130);
+        webhookStatus.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
+        webhookSettingsButton.Text = "设置消息推送";
+        webhookSettingsButton.AutoSize = false;
+        webhookSettingsButton.Size = new Size(112, 32);
+        webhookSettingsButton.FlatStyle = FlatStyle.Flat;
+        webhookSettingsButton.FlatAppearance.BorderColor = Color.FromArgb(188, 197, 207);
+        webhookSettingsButton.BackColor = Color.White;
+        webhookSettingsButton.ForeColor = Color.FromArgb(46, 60, 73);
+        webhookSettingsButton.Font = new Font("Microsoft YaHei UI", 9);
+        webhookSettingsButton.Cursor = Cursors.Hand;
+        webhookSettingsButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        webhookSettingsButton.Click += WebhookSettingsButton_Click;
+
+        headerPanel.Controls.AddRange([title, webhookSettingsButton, webhookStatus, connectionStatus]);
+        headerPanel.Resize += (_, _) => LayoutHeaderActions();
+        Controls.Add(headerPanel);
+        LayoutHeaderActions();
+    }
+
+    private void LayoutHeaderActions()
+    {
+        connectionStatus.Location = new Point(headerPanel.ClientSize.Width - connectionStatus.Width - 28, 27);
+        webhookStatus.Location = new Point(connectionStatus.Left - webhookStatus.Width - 20, 28);
+        webhookSettingsButton.Location = new Point(webhookStatus.Left - webhookSettingsButton.Width - 10, 20);
+    }
+
+    private void WebhookSettingsButton_Click(object? sender, EventArgs e)
+    {
+        using var dialog = new Form
+        {
+            Text = "设置企业微信消息推送",
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ShowInTaskbar = false,
+            ClientSize = new Size(580, 220),
+            BackColor = Color.White,
+            Font = new Font("Microsoft YaHei UI", 9)
+        };
+        var title = new Label
+        {
+            Text = "企业微信机器人 Webhook 地址",
+            AutoSize = true,
+            Font = new Font("Microsoft YaHei UI", 11, FontStyle.Bold),
+            ForeColor = Color.FromArgb(32, 48, 64),
+            Location = new Point(24, 24)
+        };
+        var hint = new Label
+        {
+            Text = "请输入企业微信群机器人提供的 Webhook 地址。地址仅在本次运行期间保存。",
+            AutoSize = true,
+            ForeColor = Color.FromArgb(109, 119, 130),
+            Location = new Point(24, 57)
+        };
+        var input = new TextBox
+        {
+            Text = enterpriseWechatWebhook ?? string.Empty,
+            PlaceholderText = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...",
+            Location = new Point(24, 91),
+            Size = new Size(532, 29),
+            AccessibleName = "企业微信消息推送地址"
+        };
+        var saveButton = new Button
+        {
+            Text = "保存",
+            DialogResult = DialogResult.None,
+            Size = new Size(92, 34),
+            Location = new Point(364, 158),
+            BackColor = Color.FromArgb(35, 110, 197),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        saveButton.FlatAppearance.BorderSize = 0;
+        var cancelButton = new Button
+        {
+            Text = "取消",
+            DialogResult = DialogResult.Cancel,
+            Size = new Size(92, 34),
+            Location = new Point(464, 158)
+        };
+        saveButton.Click += (_, _) =>
+        {
+            var value = input.Text.Trim();
+            if (!IsValidEnterpriseWechatWebhook(value))
+            {
+                MessageBox.Show("请输入有效的企业微信机器人 Webhook 地址。地址必须使用 HTTPS，并包含 webhook/send 和 key 参数。", "地址无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                input.Focus();
+                return;
+            }
+            enterpriseWechatWebhook = value;
+            dialog.DialogResult = DialogResult.OK;
+            dialog.Close();
+        };
+        dialog.AcceptButton = saveButton;
+        dialog.CancelButton = cancelButton;
+        dialog.Controls.AddRange([title, hint, input, saveButton, cancelButton]);
+
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        webhookStatus.Text = "已配置消息推送";
+        webhookStatus.ForeColor = Color.FromArgb(25, 126, 76);
+        webhookSettingsButton.Text = "修改消息推送";
+        LayoutHeaderActions();
+    }
+
+    private static bool IsValidEnterpriseWechatWebhook(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
+            return false;
+        return uri.Host.Equals("qyapi.weixin.qq.com", StringComparison.OrdinalIgnoreCase)
+            && uri.AbsolutePath.EndsWith("/cgi-bin/webhook/send", StringComparison.OrdinalIgnoreCase)
+            && uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+                .Any(part => part.StartsWith("key=", StringComparison.OrdinalIgnoreCase) && part.Length > 4);
     }
 
     private void BuildConnectionPanel()
@@ -165,6 +285,7 @@ public sealed class MainForm : Form
             connectionPanel.Visible = false;
             connectionStatus.Text = "已连接数据库";
             connectionStatus.ForeColor = Color.FromArgb(25, 126, 76);
+            LayoutHeaderActions();
             ShowFolderQueryPanel();
         }
         catch (SqlException)
@@ -401,10 +522,11 @@ public sealed class MainForm : Form
         var items = rows.Select(row => new
             {
                 ResourceId = Convert.ToString(row.Cells["文件ID"].Value),
-                PhysicalId = Convert.ToString(row.Cells["物理文件ID"].Value)
+                PhysicalId = Convert.ToString(row.Cells["物理文件ID"].Value),
+                FileName = Convert.ToString(row.Cells["文件名称"].Value) ?? "未命名文件"
             })
             .Where(item => long.TryParse(item.ResourceId, out _) && !string.IsNullOrWhiteSpace(item.PhysicalId))
-            .Select(item => (ResourceId: long.Parse(item.ResourceId!), PhysicalId: item.PhysicalId!))
+            .Select(item => (ResourceId: long.Parse(item.ResourceId!), PhysicalId: item.PhysicalId!, item.FileName))
             .Distinct().ToList();
         var resourceIds = items.Select(item => item.ResourceId).Distinct().ToList();
         if (items.Count == 0)
@@ -446,6 +568,18 @@ public sealed class MainForm : Form
             var affected = await command.ExecuteNonQueryAsync(); await transaction.CommitAsync();
             foreach (var row in rows.OrderByDescending(row => row.Index)) if (row.DataBoundItem is DataRowView view) view.Row.Delete();
             queryStatus.Text = $"删除完成：OA 记录 {affected} 条，upload 文件 {uploadCount} 个，officetrans 文件夹 {officeCount} 个。";
+            if (!string.IsNullOrWhiteSpace(enterpriseWechatWebhook))
+            {
+                queryStatus.Text += " 正在推送企业微信消息...";
+                var pushResult = await SendDeleteNotificationAsync(
+                    items.Select(item => (item.ResourceId, item.FileName, item.PhysicalId)).ToList(),
+                    affected, uploadCount, officeCount);
+                queryStatus.Text = pushResult.Success
+                    ? $"删除完成并已推送消息：OA 记录 {affected} 条，upload 文件 {uploadCount} 个，officetrans 文件夹 {officeCount} 个。"
+                    : $"删除完成，但消息推送失败：OA 记录 {affected} 条，upload 文件 {uploadCount} 个，officetrans 文件夹 {officeCount} 个。";
+                if (!pushResult.Success)
+                    MessageBox.Show($"文件已删除，但企业微信消息推送失败。\n\n{pushResult.ErrorMessage}", "消息推送失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
         catch (SqlException) { queryStatus.Text = "数据库删除失败，事务已回滚；请核对服务器文件。"; MessageBox.Show("数据库删除失败，事务已回滚；服务器文件删除无法自动恢复，请立即核对。", "删除失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         catch (UnauthorizedAccessException) { queryStatus.Text = "没有删除服务器文件的权限。"; MessageBox.Show("没有删除服务器文件的权限，请使用具备目录写入权限的账户运行。", "权限不足", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -459,4 +593,120 @@ public sealed class MainForm : Form
         var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (!fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase)) throw new IOException("检测到超出 OA 存储根目录的路径，操作已中止。 ");
     }
+
+    private async Task<PushResult> SendDeleteNotificationAsync(
+        IReadOnlyList<(long ResourceId, string FileName, string PhysicalId)> files,
+        int databaseCount,
+        int uploadCount,
+        int officeTransCount)
+    {
+        if (string.IsNullOrWhiteSpace(enterpriseWechatWebhook)) return new(false, "未配置企业微信 Webhook 地址。");
+        var webhookUri = new Uri(enterpriseWechatWebhook);
+        var key = GetQueryParameter(webhookUri, "key");
+        if (string.IsNullOrWhiteSpace(key)) return new(false, "Webhook 地址中缺少 key 参数。");
+        var timestamp = DateTime.Now;
+        var temporaryDirectory = Path.Combine(Path.GetTempPath(), "SeeyonFilePurge", Guid.NewGuid().ToString("N"));
+        var uploadFileName = $"Seeyon-OA-Delete-Details-{timestamp:yyyyMMdd-HHmmss}.csv";
+        var temporaryPath = Path.Combine(temporaryDirectory, uploadFileName);
+
+        try
+        {
+            Directory.CreateDirectory(temporaryDirectory);
+            var csv = new StringBuilder();
+            csv.AppendLine("项目,内容");
+            csv.AppendLine($"查询文件夹,{EscapeCsv(folderNameInput.Text.Trim())}");
+            csv.AppendLine($"删除文件数,{files.Count}");
+            csv.AppendLine($"OA记录数,{databaseCount}");
+            csv.AppendLine($"upload源文件数,{uploadCount}");
+            csv.AppendLine($"officetrans文件夹数,{officeTransCount}");
+            csv.AppendLine($"OA服务器,{EscapeCsv(Environment.MachineName)}");
+            csv.AppendLine($"操作时间,{timestamp:yyyy-MM-dd HH:mm:ss}");
+            csv.AppendLine();
+            csv.AppendLine("文件ID,文件名称,物理文件ID");
+            foreach (var file in files)
+                csv.AppendLine($"{file.ResourceId},{EscapeCsv(file.FileName)},{EscapeCsv(file.PhysicalId)}");
+            await File.WriteAllTextAsync(temporaryPath, csv.ToString(), new UTF8Encoding(true));
+
+            var uploadUri = new UriBuilder(webhookUri)
+            {
+                Path = "/cgi-bin/webhook/upload_media",
+                Query = $"key={Uri.EscapeDataString(key)}&type=file"
+            }.Uri;
+            var fileBytes = await File.ReadAllBytesAsync(temporaryPath);
+            using var uploadContent = CreateWechatUploadContent(fileBytes, uploadFileName);
+            using var uploadResponse = await WebhookClient.PostAsync(uploadUri, uploadContent);
+            if (!uploadResponse.IsSuccessStatusCode)
+                return new(false, $"上传明细文档时接口返回 HTTP 状态码 {(int)uploadResponse.StatusCode}。");
+            var uploadResult = await uploadResponse.Content.ReadAsStringAsync();
+            using var uploadDocument = JsonDocument.Parse(uploadResult);
+            var uploadError = GetWechatError(uploadDocument.RootElement, "上传明细文档");
+            if (uploadError is not null) return new(false, uploadError);
+            if (!uploadDocument.RootElement.TryGetProperty("media_id", out var mediaIdElement))
+                return new(false, "上传明细文档成功，但企业微信响应中没有 media_id。");
+            var mediaId = mediaIdElement.GetString();
+            if (string.IsNullOrWhiteSpace(mediaId)) return new(false, "企业微信返回的 media_id 为空。");
+
+            var payload = new { msgtype = "file", file = new { media_id = mediaId } };
+            using var sendResponse = await WebhookClient.PostAsJsonAsync(enterpriseWechatWebhook, payload);
+            if (!sendResponse.IsSuccessStatusCode)
+                return new(false, $"发送明细文档时接口返回 HTTP 状态码 {(int)sendResponse.StatusCode}。");
+            var sendResult = await sendResponse.Content.ReadAsStringAsync();
+            using var sendDocument = JsonDocument.Parse(sendResult);
+            var sendError = GetWechatError(sendDocument.RootElement, "发送明细文档");
+            return sendError is null ? new(true, string.Empty) : new(false, sendError);
+        }
+        catch (HttpRequestException) { return new(false, "请求企业微信接口失败，请检查服务器网络连接。"); }
+        catch (TaskCanceledException) { return new(false, "请求企业微信接口超时。"); }
+        catch (JsonException) { return new(false, "企业微信接口返回了无法识别的数据。"); }
+        catch (IOException) { return new(false, "生成或读取临时明细文档失败。"); }
+        finally
+        {
+            try { if (Directory.Exists(temporaryDirectory)) Directory.Delete(temporaryDirectory, true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    private static string? GetWechatError(JsonElement root, string operation)
+    {
+        if (!root.TryGetProperty("errcode", out var errorCode) || !errorCode.TryGetInt32(out var code))
+            return $"{operation}时，企业微信响应中缺少错误码。";
+        if (code == 0) return null;
+        var message = root.TryGetProperty("errmsg", out var errorMessage)
+            ? errorMessage.GetString() ?? "未提供错误信息"
+            : "未提供错误信息";
+        return $"{operation}失败。企业微信错误码：{code}，错误信息：{message}";
+    }
+
+    private static string? GetQueryParameter(Uri uri, string name)
+    {
+        foreach (var part in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = part.Split('=', 2);
+            if (pair.Length == 2 && pair[0].Equals(name, StringComparison.OrdinalIgnoreCase))
+                return Uri.UnescapeDataString(pair[1]);
+        }
+        return null;
+    }
+
+    private static ByteArrayContent CreateWechatUploadContent(byte[] fileBytes, string fileName)
+    {
+        var boundary = "--------------------------" + Guid.NewGuid().ToString("N");
+        var header = $"--{boundary}\r\n"
+            + $"Content-Disposition: form-data; name=\"media\"; filename=\"{fileName}\"; filelength={fileBytes.Length}\r\n"
+            + "Content-Type: application/octet-stream\r\n\r\n";
+        var footer = $"\r\n--{boundary}--\r\n";
+        var headerBytes = Encoding.ASCII.GetBytes(header);
+        var footerBytes = Encoding.ASCII.GetBytes(footer);
+        var body = new byte[headerBytes.Length + fileBytes.Length + footerBytes.Length];
+        Buffer.BlockCopy(headerBytes, 0, body, 0, headerBytes.Length);
+        Buffer.BlockCopy(fileBytes, 0, body, headerBytes.Length, fileBytes.Length);
+        Buffer.BlockCopy(footerBytes, 0, body, headerBytes.Length + fileBytes.Length, footerBytes.Length);
+
+        var content = new ByteArrayContent(body);
+        content.Headers.TryAddWithoutValidation("Content-Type", $"multipart/form-data; boundary={boundary}");
+        return content;
+    }
+
+    private static string EscapeCsv(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
 }
