@@ -20,6 +20,8 @@ dotnet build -c Release
 
 程序顶部支持配置企业微信群机器人 Webhook 地址。配置成功后显示“已配置消息推送”，Webhook 地址仅保留在当前进程内存中，不写入磁盘。
 
+程序顶部支持自定义 `upload` 和 `officetrans` 根目录，默认路径为 `D:\Seeyon\A8\base\upload` 和 `D:\Seeyon\A8\base\officetrans`。配置仅在当前运行期间保存，适用于安装在其他磁盘或目录的 OA 环境。
+
 文件删除及数据库事务提交成功后，程序会生成 UTF-8 CSV 清理明细文档并通过企业微信群机器人推送。文档包含删除汇总以及全部文件的文件 ID、文件名称和物理文件 ID。临时文档发送后立即删除；推送失败不会影响已经完成的删除操作。
 
 推送文档中的源文件总大小来自 `CTP_FILE.FILE_SIZE`；`officetrans` 大小在删除前递归扫描物理文件夹计算，两者分别列出，不将 `officetrans` 空间重复计入源文件总大小。

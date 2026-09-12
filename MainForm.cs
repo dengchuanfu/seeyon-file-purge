@@ -10,14 +10,16 @@ public sealed class MainForm : Form
 {
     private sealed record PushResult(bool Success, string ErrorMessage);
 
-    private const string UploadRoot = @"D:\Seeyon\A8\base\upload";
-    private const string OfficeTransRoot = @"D:\Seeyon\A8\base\officetrans";
+    private const string DefaultUploadRoot = @"D:\Seeyon\A8\base\upload";
+    private const string DefaultOfficeTransRoot = @"D:\Seeyon\A8\base\officetrans";
     private static readonly HttpClient WebhookClient = new() { Timeout = TimeSpan.FromSeconds(60) };
     private readonly Panel headerPanel = new();
     private readonly Panel connectionPanel = new();
     private readonly Label connectionStatus = new();
     private readonly Button webhookSettingsButton = new();
     private readonly Label webhookStatus = new();
+    private readonly Button storageSettingsButton = new();
+    private readonly Label storageStatus = new();
     private readonly TextBox serverInput = new();
     private readonly TextBox databaseInput = new();
     private readonly TextBox usernameInput = new();
@@ -32,6 +34,8 @@ public sealed class MainForm : Form
     private readonly DataGridView resultGrid = new();
     private SqlConnection? connection;
     private string? enterpriseWechatWebhook;
+    private string uploadRoot = DefaultUploadRoot;
+    private string officeTransRoot = DefaultOfficeTransRoot;
 
     public MainForm()
     {
@@ -50,7 +54,7 @@ public sealed class MainForm : Form
     private void BuildHeader()
     {
         headerPanel.Dock = DockStyle.Top;
-        headerPanel.Height = 72;
+        headerPanel.Height = 104;
         headerPanel.BackColor = Color.White;
         headerPanel.Padding = new Padding(28, 0, 28, 0);
 
@@ -87,7 +91,26 @@ public sealed class MainForm : Form
         webhookSettingsButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         webhookSettingsButton.Click += WebhookSettingsButton_Click;
 
-        headerPanel.Controls.AddRange([title, webhookSettingsButton, webhookStatus, connectionStatus]);
+        storageStatus.Text = "使用默认存储路径";
+        storageStatus.AutoSize = true;
+        storageStatus.Font = new Font("Microsoft YaHei UI", 9);
+        storageStatus.ForeColor = Color.FromArgb(109, 119, 130);
+        storageStatus.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+
+        storageSettingsButton.Text = "设置存储路径";
+        storageSettingsButton.AutoSize = false;
+        storageSettingsButton.Size = new Size(112, 32);
+        storageSettingsButton.FlatStyle = FlatStyle.Flat;
+        storageSettingsButton.FlatAppearance.BorderColor = Color.FromArgb(188, 197, 207);
+        storageSettingsButton.BackColor = Color.White;
+        storageSettingsButton.ForeColor = Color.FromArgb(46, 60, 73);
+        storageSettingsButton.Font = new Font("Microsoft YaHei UI", 9);
+        storageSettingsButton.Cursor = Cursors.Hand;
+        storageSettingsButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        storageSettingsButton.Click += StorageSettingsButton_Click;
+
+        headerPanel.Controls.AddRange([title, storageSettingsButton, storageStatus,
+            webhookSettingsButton, webhookStatus, connectionStatus]);
         headerPanel.Resize += (_, _) => LayoutHeaderActions();
         Controls.Add(headerPanel);
         LayoutHeaderActions();
@@ -95,9 +118,11 @@ public sealed class MainForm : Form
 
     private void LayoutHeaderActions()
     {
-        connectionStatus.Location = new Point(headerPanel.ClientSize.Width - connectionStatus.Width - 28, 27);
-        webhookStatus.Location = new Point(connectionStatus.Left - webhookStatus.Width - 20, 28);
-        webhookSettingsButton.Location = new Point(webhookStatus.Left - webhookSettingsButton.Width - 10, 20);
+        connectionStatus.Location = new Point(headerPanel.ClientSize.Width - connectionStatus.Width - 28, 20);
+        webhookStatus.Location = new Point(headerPanel.ClientSize.Width - webhookStatus.Width - 28, 69);
+        webhookSettingsButton.Location = new Point(webhookStatus.Left - webhookSettingsButton.Width - 10, 59);
+        storageStatus.Location = new Point(webhookSettingsButton.Left - storageStatus.Width - 22, 69);
+        storageSettingsButton.Location = new Point(storageStatus.Left - storageSettingsButton.Width - 10, 59);
     }
 
     private void WebhookSettingsButton_Click(object? sender, EventArgs e)
@@ -187,6 +212,178 @@ public sealed class MainForm : Form
             && uri.AbsolutePath.EndsWith("/cgi-bin/webhook/send", StringComparison.OrdinalIgnoreCase)
             && uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
                 .Any(part => part.StartsWith("key=", StringComparison.OrdinalIgnoreCase) && part.Length > 4);
+    }
+
+    private void StorageSettingsButton_Click(object? sender, EventArgs e)
+    {
+        using var dialog = new Form
+        {
+            Text = "设置 OA 文件存储路径",
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ShowInTaskbar = false,
+            ClientSize = new Size(700, 300),
+            BackColor = Color.White,
+            Font = new Font("Microsoft YaHei UI", 9)
+        };
+        var title = new Label
+        {
+            Text = "OA 文件存储根目录",
+            AutoSize = true,
+            Font = new Font("Microsoft YaHei UI", 11, FontStyle.Bold),
+            ForeColor = Color.FromArgb(32, 48, 64),
+            Location = new Point(24, 22)
+        };
+        var hint = new Label
+        {
+            Text = "路径仅在本次运行期间保存。删除操作只允许访问以下两个根目录。",
+            AutoSize = true,
+            ForeColor = Color.FromArgb(109, 119, 130),
+            Location = new Point(24, 53)
+        };
+        var uploadLabel = new Label
+        {
+            Text = "upload 根目录",
+            AutoSize = true,
+            Location = new Point(24, 88)
+        };
+        var uploadInput = new TextBox
+        {
+            Text = uploadRoot,
+            Location = new Point(24, 109),
+            Size = new Size(548, 29),
+            AccessibleName = "upload 根目录"
+        };
+        var uploadBrowseButton = CreateBrowseButton(new Point(584, 108));
+        uploadBrowseButton.Click += (_, _) => SelectStorageDirectory(uploadInput, "选择 upload 根目录");
+
+        var officeLabel = new Label
+        {
+            Text = "officetrans 根目录",
+            AutoSize = true,
+            Location = new Point(24, 153)
+        };
+        var officeInput = new TextBox
+        {
+            Text = officeTransRoot,
+            Location = new Point(24, 174),
+            Size = new Size(548, 29),
+            AccessibleName = "officetrans 根目录"
+        };
+        var officeBrowseButton = CreateBrowseButton(new Point(584, 173));
+        officeBrowseButton.Click += (_, _) => SelectStorageDirectory(officeInput, "选择 officetrans 根目录");
+
+        var saveButton = new Button
+        {
+            Text = "保存",
+            Size = new Size(92, 34),
+            Location = new Point(484, 240),
+            BackColor = Color.FromArgb(35, 110, 197),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        saveButton.FlatAppearance.BorderSize = 0;
+        var cancelButton = new Button
+        {
+            Text = "取消",
+            DialogResult = DialogResult.Cancel,
+            Size = new Size(92, 34),
+            Location = new Point(584, 240)
+        };
+        saveButton.Click += (_, _) =>
+        {
+            if (!TryNormalizeStorageRoot(uploadInput.Text, "upload", out var normalizedUpload, out var uploadError))
+            {
+                MessageBox.Show(uploadError, "upload 路径无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                uploadInput.Focus();
+                return;
+            }
+            if (!TryNormalizeStorageRoot(officeInput.Text, "officetrans", out var normalizedOffice, out var officeError))
+            {
+                MessageBox.Show(officeError, "officetrans 路径无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                officeInput.Focus();
+                return;
+            }
+            if (normalizedUpload.Equals(normalizedOffice, StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show("upload 和 officetrans 不能设置为同一个目录。", "存储路径无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            uploadRoot = normalizedUpload;
+            officeTransRoot = normalizedOffice;
+            dialog.DialogResult = DialogResult.OK;
+            dialog.Close();
+        };
+        dialog.AcceptButton = saveButton;
+        dialog.CancelButton = cancelButton;
+        dialog.Controls.AddRange([title, hint, uploadLabel, uploadInput, uploadBrowseButton,
+            officeLabel, officeInput, officeBrowseButton, saveButton, cancelButton]);
+
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        storageStatus.Text = "已配置存储路径";
+        storageStatus.ForeColor = Color.FromArgb(25, 126, 76);
+        storageSettingsButton.Text = "修改存储路径";
+        LayoutHeaderActions();
+    }
+
+    private static Button CreateBrowseButton(Point location) => new()
+    {
+        Text = "选择...",
+        Size = new Size(92, 30),
+        Location = location,
+        FlatStyle = FlatStyle.System,
+        Cursor = Cursors.Hand
+    };
+
+    private static void SelectStorageDirectory(TextBox input, string description)
+    {
+        using var browser = new FolderBrowserDialog
+        {
+            Description = description,
+            UseDescriptionForTitle = true,
+            ShowNewFolderButton = false,
+            SelectedPath = Directory.Exists(input.Text.Trim()) ? input.Text.Trim() : string.Empty
+        };
+        if (browser.ShowDialog() == DialogResult.OK)
+            input.Text = browser.SelectedPath;
+    }
+
+    private static bool TryNormalizeStorageRoot(
+        string value,
+        string expectedFolderName,
+        out string normalizedPath,
+        out string errorMessage)
+    {
+        normalizedPath = string.Empty;
+        errorMessage = string.Empty;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                errorMessage = $"请输入 {expectedFolderName} 根目录。";
+                return false;
+            }
+            normalizedPath = Path.GetFullPath(value.Trim()).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!Directory.Exists(normalizedPath))
+            {
+                errorMessage = $"目录不存在：{normalizedPath}";
+                return false;
+            }
+            if (!Path.GetFileName(normalizedPath).Equals(expectedFolderName, StringComparison.OrdinalIgnoreCase))
+            {
+                errorMessage = $"请选择名称为 {expectedFolderName} 的根目录。";
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            errorMessage = "路径格式无效。";
+            return false;
+        }
     }
 
     private void BuildConnectionPanel()
@@ -342,7 +539,7 @@ public sealed class MainForm : Form
             Location = new Point(28, 97)
         };
 
-        folderNameInput.PlaceholderText = "例如：产品承认书";
+        folderNameInput.PlaceholderText = "例如：文控中心/PCB图纸";
         folderNameInput.Font = new Font("Microsoft YaHei UI", 10);
         folderNameInput.Location = new Point(28, 118);
         folderNameInput.Size = new Size(380, 29);
@@ -434,17 +631,33 @@ public sealed class MainForm : Form
         try
         {
             using var command = connection.CreateCommand();
-            command.CommandText = """
+            var pathParts = folderNameInput.Text.Trim()
+                .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (pathParts.Length == 0 || pathParts.Any(string.IsNullOrWhiteSpace))
+                throw new InvalidOperationException("文件夹路径不能为空。");
+
+            var rootJoins = new StringBuilder();
+            var rootWhere = new StringBuilder($"target.FR_NAME = @path{pathParts.Length - 1} AND target.IS_FOLDER = 1");
+            for (var index = 1; index < pathParts.Length; index++)
+            {
+                var alias = $"parent{index}";
+                var childAlias = index == 1 ? "target" : $"parent{index - 1}";
+                rootJoins.AppendLine($"INNER JOIN DOC_RESOURCES AS {alias} ON {childAlias}.PARENT_FR_ID = {alias}.ID");
+                rootWhere.Append($" AND {alias}.FR_NAME = @path{pathParts.Length - 1 - index}");
+            }
+
+            command.CommandText = $"""
                 WITH FolderRoots AS (
                     SELECT
-                        ID, FR_NAME, PARENT_FR_ID, LOGICAL_PATH, IS_FOLDER, SOURCE_ID, FR_SIZE,
+                        target.ID, target.FR_NAME, target.PARENT_FR_ID, target.LOGICAL_PATH, target.IS_FOLDER, target.SOURCE_ID, target.FR_SIZE,
                         CAST(
-                            N'0:' + ISNULL(FR_NAME, N'') + N':' +
-                            RIGHT(REPLICATE(N'0', 30) + CONVERT(nvarchar(30), ID), 30) + N'/'
+                            N'0:' + ISNULL(target.FR_NAME, N'') + N':' +
+                            RIGHT(REPLICATE(N'0', 30) + CONVERT(nvarchar(30), target.ID), 30) + N'/'
                             AS nvarchar(max)
                         ) AS SORT_PATH
-                    FROM DOC_RESOURCES
-                    WHERE FR_NAME = @folderName AND IS_FOLDER = 1
+                    FROM DOC_RESOURCES AS target
+                    {rootJoins}
+                    WHERE {rootWhere}
                 ),
                 ResourceTree AS (
                     SELECT ID, FR_NAME, PARENT_FR_ID, LOGICAL_PATH, IS_FOLDER, SOURCE_ID, FR_SIZE, SORT_PATH
@@ -473,7 +686,8 @@ public sealed class MainForm : Form
                 ORDER BY ResourceTree.SORT_PATH
                 OPTION (MAXRECURSION 32767);
                 """;
-            command.Parameters.AddWithValue("@folderName", folderNameInput.Text.Trim());
+            for (var index = 0; index < pathParts.Length; index++)
+                command.Parameters.AddWithValue($"@path{index}", pathParts[index]);
 
             using var reader = await command.ExecuteReaderAsync();
             var result = new DataTable();
@@ -485,6 +699,12 @@ public sealed class MainForm : Form
             resultGrid.Columns["文件名称"].FillWeight = 100;
             resultGrid.Columns["统计源文件大小"].Visible = false;
             queryStatus.Text = $"查询完成，共找到 {result.Rows.Count} 个文件；物理文件仅供核对，不会被删除。";
+        }
+        catch (InvalidOperationException ex)
+        {
+            resultGrid.DataSource = null;
+            queryStatus.Text = "查询条件无效。";
+            MessageBox.Show(ex.Message, "查询条件无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         catch (SqlException ex)
         {
@@ -546,21 +766,21 @@ public sealed class MainForm : Form
         queryStatus.Text = "正在删除服务器源文件和 OA 记录，请稍候...";
         try
         {
-            if (!Directory.Exists(UploadRoot) || !Directory.Exists(OfficeTransRoot))
+            if (!Directory.Exists(uploadRoot) || !Directory.Exists(officeTransRoot))
                 throw new IOException("未找到 upload 或 officetrans 目录，请确认 OA 路径。 ");
             var physicalIds = items.Select(item => item.PhysicalId).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var uploadCount = 0; var officeCount = 0; long officeTransSize = 0;
-            foreach (var path in Directory.EnumerateFiles(UploadRoot, "*", SearchOption.AllDirectories)
+            foreach (var path in Directory.EnumerateFiles(uploadRoot, "*", SearchOption.AllDirectories)
                 .Where(path => physicalIds.Contains(Path.GetFileName(path))).ToList())
             {
-                EnsureUnderRoot(path, UploadRoot); File.Delete(path); uploadCount++;
+                EnsureUnderRoot(path, uploadRoot); File.Delete(path); uploadCount++;
             }
-            foreach (var dateDir in Directory.EnumerateDirectories(OfficeTransRoot))
+            foreach (var dateDir in Directory.EnumerateDirectories(officeTransRoot))
             {
                 foreach (var target in Directory.EnumerateDirectories(dateDir)
                     .Where(path => physicalIds.Contains(Path.GetFileName(path))).ToList())
                 {
-                    EnsureUnderRoot(target, OfficeTransRoot);
+                    EnsureUnderRoot(target, officeTransRoot);
                     officeTransSize += GetDirectorySize(target);
                     Directory.Delete(target, true); officeCount++;
                 }
