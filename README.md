@@ -11,6 +11,7 @@
 ```powershell
 dotnet build -c Release
 ```
+![Uploading image.png…]()
 
 可直接运行的 64 位 Windows Server 单文件程序位于发布附件中。
 
