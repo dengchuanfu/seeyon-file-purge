@@ -11,8 +11,6 @@
 ```powershell
 dotnet build -c Release
 ```
-![Uploading image.png…]()
-
 可直接运行的 64 位 Windows Server 单文件程序位于发布附件中。
 
 连接成功后，在“待删除文件夹名称”输入框中输入名称并点击“查询文件”，程序会递归查询 `DOC_RESOURCES` 下的所有子文件夹文件，并显示文件 ID、文件名称和物理文件 ID。
